@@ -9,14 +9,14 @@ The model is backed by :class:`src.models.sequence.backbones.model.SequenceModel
 with the S4 block from :mod:`src.models.sequence.modules.s4block`.
 """
 
-from typing import Any, Optional, Tuple
+from typing import Any, Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
 
 from src.models.sequence.backbones.model import SequenceModel
-from src.utils.config import instantiate
 from src.utils import registry
+from src.utils.config import instantiate
 
 
 class S4Layer(nn.Module):
@@ -126,6 +126,30 @@ class S4(nn.Module):
 
         return self.model.default_state(*batch_shape, device=device)
 
+    # ---------------------------------------------------------------------
+    # Optimizer utilities
+    # ---------------------------------------------------------------------
+
+    def configure_optimizer(
+        self, optimizer: str = "adam", **kwargs: Any
+    ) -> torch.optim.Optimizer:
+        """Return an optimizer for this model.
+
+        This convenience method exposes all optimizers registered in
+        :mod:`src.utils.registry.optimizer` so that an :class:`S4` instance can
+        be trained like any other ``torch.nn`` module.
+
+        Parameters
+        ----------
+        optimizer:
+            Name of the optimizer to construct (e.g. ``"adam"``, ``"sgd"``).
+        **kwargs:
+            Additional keyword arguments forwarded to the optimizer
+            constructor, such as ``lr`` or ``weight_decay``.
+        """
+
+        return build_optimizer(self.parameters(), optimizer=optimizer, **kwargs)
+
 
 def s4(*args: Any, **kwargs: Any) -> S4:
     """Convenience function returning :class:`S4`.
@@ -136,3 +160,29 @@ def s4(*args: Any, **kwargs: Any) -> S4:
 
     return S4(*args, **kwargs)
 
+
+def build_optimizer(
+    params: Iterable[torch.nn.Parameter],
+    *,
+    optimizer: str = "adam",
+    **kwargs: Any,
+) -> torch.optim.Optimizer:
+    """Instantiate an optimizer from the internal registry.
+
+    Examples
+    --------
+    >>> model = S4(layers=2, d_model=128)
+    >>> opt = build_optimizer(model.parameters(), optimizer="adamw", lr=1e-3)
+
+    Parameters
+    ----------
+    params:
+        Iterable of parameters to optimize.
+    optimizer:
+        Name of the optimizer from :mod:`src.utils.registry.optimizer`.
+    **kwargs:
+        Additional keyword arguments passed to the optimizer constructor.
+    """
+
+    opt_cfg = {"_name_": optimizer, **kwargs}
+    return instantiate(registry.optimizer, opt_cfg, params)
