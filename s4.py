@@ -13,6 +13,7 @@ from typing import Any, Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from src.models.sequence.backbones.model import SequenceModel
 from src.utils import registry
@@ -126,6 +127,83 @@ class S4(nn.Module):
 
         return self.model.default_state(*batch_shape, device=device)
 
+    # ------------------------------------------------------------------
+    # Training utilities
+    # ------------------------------------------------------------------
+
+    def fit(
+        self,
+        train_data: Any,
+        *,
+        epochs: int = 1,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        loss_fn: Optional[nn.Module] = None,
+        val_data: Any = None,
+        device: Optional[torch.device] = None,
+        **loader_kwargs: Any,
+    ) -> "S4":
+        """Train the model with a simple loop.
+
+        Parameters
+        ----------
+        train_data:
+            Training dataset or dataloader. If arrays are provided they are
+            wrapped in a :class:`TensorDataset`.
+        epochs:
+            Number of epochs to train.
+        optimizer:
+            Optional optimizer. If ``None`` then :meth:`configure_optimizer`
+            is used to build an ``adam`` optimizer.
+        loss_fn:
+            Loss function to optimize. Defaults to
+            :class:`torch.nn.CrossEntropyLoss`.
+        val_data:
+            Optional validation dataset evaluated at the end of each epoch.
+        device:
+            Device to run training on. Defaults to the model's current device.
+        **loader_kwargs:
+            Extra keyword arguments passed to :func:`build_dataloader`.
+        """
+
+        train_loader = build_dataloader(train_data, **loader_kwargs)
+        val_loader = (
+            build_dataloader(val_data, shuffle=False, **loader_kwargs)
+            if val_data is not None
+            else None
+        )
+        if optimizer is None:
+            optimizer = self.configure_optimizer()
+        if loss_fn is None:
+            loss_fn = nn.CrossEntropyLoss()
+
+        device = device or next(self.parameters()).device
+        self.to(device)
+
+        for _ in range(epochs):
+            self.train()
+            for x, y in train_loader:
+                x, y = x.to(device), y.to(device)
+                optimizer.zero_grad()
+                out, _ = self(x)
+                loss = loss_fn(out.view(-1, out.size(-1)), y.view(-1))
+                loss.backward()
+                optimizer.step()
+
+            if val_loader is not None:
+                self.eval()
+                with torch.no_grad():
+                    val_loss = 0.0
+                    for x, y in val_loader:
+                        x, y = x.to(device), y.to(device)
+                        out, _ = self(x)
+                        val_loss += loss_fn(
+                            out.view(-1, out.size(-1)), y.view(-1)
+                        ).item()
+                val_loss /= len(val_loader)
+                print(f"val_loss={val_loss:.4f}")
+
+        return self
+
     # ---------------------------------------------------------------------
     # Optimizer utilities
     # ---------------------------------------------------------------------
@@ -159,6 +237,30 @@ def s4(*args: Any, **kwargs: Any) -> S4:
     """
 
     return S4(*args, **kwargs)
+
+
+def build_dataloader(
+    data: Any,
+    *,
+    targets: Optional[Any] = None,
+    batch_size: int = 64,
+    shuffle: bool = True,
+    **kwargs: Any,
+) -> DataLoader:
+    """Construct a :class:`~torch.utils.data.DataLoader` from various inputs.
+
+    ``data`` may be a ``Dataset``, an existing ``DataLoader`` or tensors.
+    When tensors are given they are wrapped in a :class:`TensorDataset`.
+    """
+
+    if isinstance(data, DataLoader):
+        return data
+    if isinstance(data, Dataset):
+        dataset = data
+    else:
+        tensors = (data,) if targets is None else (data, targets)
+        dataset = TensorDataset(*tensors)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, **kwargs)
 
 
 def build_optimizer(
